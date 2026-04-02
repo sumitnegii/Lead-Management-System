@@ -10,8 +10,8 @@ export async function GET() {
     });
     if (!res.ok) return new NextResponse(`Upstream error: ${res.status}`, { status: 502 });
     return NextResponse.json(await res.json(), { status: 200 });
-  } catch (error) {
+  } catch (error: any) {
     console.error("API proxy error /api/leads:", error);
-    return new NextResponse("Failed to fetch leads from backend", { status: 500 });
+    return new NextResponse(JSON.stringify({ error: "Failed to fetch leads from backend", details: error.message, api_url: API }), { status: 500 });
   }
 }
