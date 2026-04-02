@@ -5,6 +5,7 @@
 - [x] 1. Update backend/db.js → use process.env.MONGODB_URI
 - [x] 2. Update backend/server.js → listen on process.env.PORT || 4000
 - [x] 3. Create root README.md with deployment instructions
+- [x] 3.5. Add dotenv to backend deps (missing module)
 - [ ] 4. Local test: backend npm start, frontend npm run dev
 - [ ] 5. Deploy Backend Web Service on Render
 - [ ] 6. Deploy Frontend Static Site on Render  

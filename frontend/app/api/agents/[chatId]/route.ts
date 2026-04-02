@@ -1,16 +1,18 @@
 import { NextResponse } from "next/server";
 
+const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ chatId: string }> }
 ) {
   try {
     const { chatId } = await params;
-    const res = await fetch(`http://localhost:4000/agents/${chatId}`);
+    const res = await fetch(`${API}/agents/${chatId}`, { headers: { "Content-Type": "application/json" } });
     if (!res.ok) return new NextResponse(`Upstream error: ${res.status}`, { status: 502 });
-    const data = await res.json();
-    return NextResponse.json(data);
+    return NextResponse.json(await res.json(), { status: 200 });
   } catch (error) {
+    console.error("API proxy error GET /api/agents/[chatId]:", error);
     return new NextResponse("Failed to fetch agent", { status: 500 });
   }
 }
@@ -22,15 +24,15 @@ export async function PUT(
   try {
     const { chatId } = await params;
     const body = await request.json();
-    const res = await fetch(`http://localhost:4000/agents/${chatId}`, {
+    const res = await fetch(`${API}/agents/${chatId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
-    if (!res.ok) return NextResponse.json(data, { status: res.status });
-    return NextResponse.json(data);
+    if (!res.ok) return new NextResponse(`Upstream error: ${res.status}`, { status: 502 });
+    return NextResponse.json(await res.json(), { status: 200 });
   } catch (error) {
+    console.error("API proxy error PUT /api/agents/[chatId]:", error);
     return new NextResponse("Failed to update agent", { status: 500 });
   }
 }
@@ -41,13 +43,11 @@ export async function DELETE(
 ) {
   try {
     const { chatId } = await params;
-    const res = await fetch(`http://localhost:4000/agents/${chatId}`, {
-      method: "DELETE",
-    });
-    const data = await res.json();
-    if (!res.ok) return NextResponse.json(data, { status: res.status });
-    return NextResponse.json(data);
+    const res = await fetch(`${API}/agents/${chatId}`, { method: "DELETE" });
+    if (!res.ok) return new NextResponse(`Upstream error: ${res.status}`, { status: 502 });
+    return NextResponse.json(await res.json(), { status: 200 });
   } catch (error) {
+    console.error("API proxy error DELETE /api/agents/[chatId]:", error);
     return new NextResponse("Failed to delete agent", { status: 500 });
   }
 }
