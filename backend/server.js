@@ -83,6 +83,50 @@ app.get("/leads/:id", async (req, res) => {
 });
 
 // get all leads from database
+// get agent's own leads (assigned to them, assigned/closed status only)
+app.get("/my-leads/:chatId", async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const leads = await Lead.aggregate([
+      {
+        $match: {
+          assigned_agent: chatId,
+          status: { $in: ['assigned', 'closed'] }
+        }
+      },
+      { $sort: { created_time: -1 } },
+      {
+        $lookup: {
+          from: "agents",
+          let: { assignedId: "$assigned_agent" },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$chatId", "$$assignedId"] } } },
+            { $project: { name: 1 } }
+          ],
+          as: "agent_lookup"
+        }
+      },
+      {
+        $addFields: {
+          agent_name: {
+            $cond: {
+              if: { $gt: [{ $size: "$agent_lookup" }, 0] },
+              then: { $arrayElemAt: ["$agent_lookup.name", 0] },
+              else: "Unassigned"
+            }
+          }
+        }
+      },
+      {
+        $project: { agent_lookup: 0 }
+      }
+    ]);
+    res.json(leads);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get("/leads", async (req, res) => {
   try {
     const leads = await Lead.aggregate([
@@ -154,7 +198,7 @@ app.get("/agents", async (req, res) => {
   }
 });
 
-// create agent
+// create agent (team lead onboarding — auto-generates a password)
 app.post("/agents", async (req, res) => {
   try {
     const { name, chatId, status, mobileNumber } = req.body;
@@ -167,9 +211,61 @@ app.post("/agents", async (req, res) => {
       return res.status(409).json({ error: "Agent with this chatId already exists" });
     }
 
-    const agent = new Agent({ name, chatId, status: status || "active", mobileNumber });
+    // Generate a random 10-char password for the agent
+    const plainPassword = Math.random().toString(36).slice(2, 7).toUpperCase() +
+                          Math.random().toString(36).slice(2, 7) +
+                          Math.floor(10 + Math.random() * 90);
+    const hashedPassword = await bcrypt.hash(plainPassword, 10);
+
+    const agent = new Agent({
+      name,
+      chatId,
+      status: status || "active",
+      mobileNumber,
+      password: hashedPassword
+    });
     await agent.save();
-    res.status(201).json(agent);
+
+    // Return the plain password ONCE so the team lead can share it
+    res.status(201).json({ ...agent.toObject(), generatedPassword: plainPassword });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// get single agent by chatId
+app.get("/agents/:chatId", async (req, res) => {
+  try {
+    const agent = await Agent.findOne({ chatId: req.params.chatId });
+    if (!agent) return res.status(404).json({ error: "Agent not found" });
+    res.json(agent);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// update agent details by chatId
+app.put("/agents/:chatId", async (req, res) => {
+  try {
+    const { name, mobileNumber, status } = req.body;
+    const updated = await Agent.findOneAndUpdate(
+      { chatId: req.params.chatId },
+      { name, mobileNumber, status },
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: "Agent not found" });
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// delete / remove agent by chatId
+app.delete("/agents/:chatId", async (req, res) => {
+  try {
+    const deleted = await Agent.findOneAndDelete({ chatId: req.params.chatId });
+    if (!deleted) return res.status(404).json({ error: "Agent not found" });
+    res.json({ message: "Agent removed successfully" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -255,6 +351,34 @@ app.put("/assign", async (req, res) => {
   }
 });
 
+// unassign lead from agent (move back to queue)
+app.put("/unassign-lead", async (req, res) => {
+  try {
+    const { lead_id } = req.body;
+
+    const existingLead = await Lead.findOne({ lead_id });
+    if (!existingLead) {
+      return res.status(404).json({ error: "Lead not found" });
+    }
+
+    const updated = await Lead.findOneAndUpdate(
+      { lead_id },
+      {
+        assigned_agent: null,
+        previous_agent: existingLead.assigned_agent || null,
+        status: "queued",
+        last_update: new Date().toISOString()
+      },
+      { new: true }
+    );
+
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey123";
 
 // --- AUTHENTICATION ENDPOINTS ---
@@ -306,16 +430,19 @@ app.post("/auth/signup", async (req, res) => {
 
 app.post("/auth/login", async (req, res) => {
   try {
-    const { role, email, password } = req.body;
-    
-    if (!role || !email || !password) {
+    const { role, email, password, chatId } = req.body;
+
+    if (!role || !password) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
     let user;
     if (role === "agent") {
-      user = await Agent.findOne({ email });
+      // Agents log in with chatId, not email
+      if (!chatId) return res.status(400).json({ error: "chatId is required for agent login" });
+      user = await Agent.findOne({ chatId });
     } else if (role === "team_lead") {
+      if (!email) return res.status(400).json({ error: "email is required for team lead login" });
       user = await TeamLead.findOne({ email });
     } else {
       return res.status(400).json({ error: "Invalid role" });
@@ -325,9 +452,8 @@ app.post("/auth/login", async (req, res) => {
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
-    // fallback for existing users without password
     if (!user.password) {
-       return res.status(401).json({ error: "Account requires password reset/setup" });
+      return res.status(401).json({ error: "Account has no password set. Contact your team lead." });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
@@ -336,12 +462,18 @@ app.post("/auth/login", async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: user._id, role, email: user.email },
+      { id: user._id, role, chatId: user.chatId || null },
       JWT_SECRET,
       { expiresIn: "1d" }
     );
 
-    res.json({ token, role, user: { name: user.name, email: user.email } });
+    const userPayload = { name: user.name };
+    if (role === "agent") {
+      userPayload.chatId = user.chatId;
+    } else {
+      userPayload.email = user.email;
+    }
+    res.json({ token, role, user: userPayload });
   } catch (err) {
     console.error("Login error:", err);
     res.status(500).json({ error: err.message });
